@@ -1,0 +1,48 @@
+---
+# Custom backend gallery with streaming TTS support
+# Point LocalAI to this gallery to use streaming-enabled kokoro and vibevoice backends
+
+- name: "kokoro"
+  alias: "kokoro"
+  license: apache-2.0
+  icon: https://avatars.githubusercontent.com/u/166769057?v=4
+  description: |
+    Kokoro TTS with streaming support.
+    Kokoro is an open-weight TTS model with 82 million parameters.
+  urls:
+    - https://huggingface.co/hexgrad/Kokoro-82M
+    - https://github.com/hexgrad/kokoro
+  tags:
+    - text-to-speech
+    - TTS
+    - streaming
+  capabilities:
+    nvidia: "cuda12-kokoro"
+    nvidia-cuda-12: "cuda12-kokoro"
+    default: "cuda12-kokoro"
+
+- name: "cuda12-kokoro"
+  uri: "ghcr.io/quickkill0/localai-backends:cuda12-kokoro"
+
+- name: "vibevoice"
+  alias: "vibevoice"
+  license: mit
+  icon: https://avatars.githubusercontent.com/u/6154722?s=200&v=4
+  description: |
+    VibeVoice TTS with streaming support (~300ms to first audio).
+    Microsoft's real-time streaming TTS model.
+  urls:
+    - https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B
+    - https://github.com/microsoft/VibeVoice
+  tags:
+    - text-to-speech
+    - TTS
+    - streaming
+    - realtime
+  capabilities:
+    nvidia: "cuda12-vibevoice"
+    nvidia-cuda-12: "cuda12-vibevoice"
+    default: "cuda12-vibevoice"
+
+- name: "cuda12-vibevoice"
+  uri: "ghcr.io/quickkill0/localai-backends:cuda12-vibevoice"
