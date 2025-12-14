@@ -74,3 +74,45 @@ func ModelTTS(
 
 	return filePath, res, err
 }
+
+// ModelTTSStream streams TTS audio chunks via callback
+func ModelTTSStream(
+	ctx context.Context,
+	text,
+	voice,
+	language string,
+	loader *model.ModelLoader,
+	appConfig *config.ApplicationConfig,
+	modelConfig config.ModelConfig,
+	chunkCallback func(chunk *proto.TTSStreamChunk) error,
+) error {
+	opts := ModelOptions(modelConfig, appConfig)
+	ttsModel, err := loader.Load(opts...)
+	if err != nil {
+		return err
+	}
+
+	if ttsModel == nil {
+		return fmt.Errorf("could not load tts model %q", modelConfig.Model)
+	}
+
+	modelPath := ""
+	mp := filepath.Join(loader.ModelPath, modelConfig.Model)
+	if _, err := os.Stat(mp); err == nil {
+		if err := utils.VerifyPath(mp, appConfig.SystemState.Model.ModelsPath); err != nil {
+			return err
+		}
+		modelPath = mp
+	} else {
+		modelPath = modelConfig.Model
+	}
+
+	return ttsModel.TTSStream(ctx, &proto.TTSRequest{
+		Text:     text,
+		Model:    modelPath,
+		Voice:    voice,
+		Language: &language,
+	}, func(chunk *proto.TTSStreamChunk) {
+		chunkCallback(chunk)
+	})
+}

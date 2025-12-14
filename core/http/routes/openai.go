@@ -137,6 +137,10 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/v1/audio/speech", audioSpeechHandler, audioSpeechMiddleware...)
 	app.POST("/audio/speech", audioSpeechHandler, audioSpeechMiddleware...)
 
+	// Streaming audio speech endpoint
+	audioSpeechStreamHandler := localai.TTSStreamEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
+	app.POST("/v1/audio/speech/stream", audioSpeechStreamHandler, audioSpeechMiddleware...)
+
 	// images
 	imageHandler := openai.ImageEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
 	imageMiddleware := []echo.MiddlewareFunc{

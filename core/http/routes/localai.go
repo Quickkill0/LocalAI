@@ -83,6 +83,12 @@ func RegisterLocalAIRoutes(router *echo.Echo,
 		requestExtractor.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_TTS)),
 		requestExtractor.SetModelAndConfig(func() schema.LocalAIRequest { return new(schema.TTSRequest) }))
 
+	ttsStreamHandler := localai.TTSStreamEndpoint(cl, ml, appConfig)
+	router.POST("/tts/stream",
+		ttsStreamHandler,
+		requestExtractor.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_TTS)),
+		requestExtractor.SetModelAndConfig(func() schema.LocalAIRequest { return new(schema.TTSRequest) }))
+
 	vadHandler := localai.VADEndpoint(cl, ml, appConfig)
 	router.POST("/vad",
 		vadHandler,

@@ -17,6 +17,7 @@ service Backend {
   rpc GenerateVideo(GenerateVideoRequest) returns (Result) {}
   rpc AudioTranscription(TranscriptRequest) returns (TranscriptResult) {}
   rpc TTS(TTSRequest) returns (Result) {}
+  rpc TTSStream(TTSRequest) returns (stream TTSStreamChunk) {}
   rpc SoundGeneration(SoundGenerationRequest) returns (Result) {}
   rpc TokenizeString(PredictOptions) returns (TokenizationResponse) {}
   rpc Status(HealthMessage) returns (StatusResponse) {}
@@ -337,6 +338,14 @@ message TTSRequest {
   string dst = 3;
   string voice = 4;
   optional string language = 5;
+}
+
+message TTSStreamChunk {
+  bytes audio = 1;           // Raw PCM audio (16-bit signed, mono)
+  int32 sample_rate = 2;     // Sample rate (24000)
+  int32 chunk_index = 3;     // Sequence number for ordering
+  bool is_final = 4;         // True if this is the last chunk
+  optional string error = 5; // Error message if generation failed
 }
 
 message VADRequest {

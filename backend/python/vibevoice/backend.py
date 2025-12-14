@@ -14,8 +14,11 @@ from pathlib import Path
 import backend_pb2
 import backend_pb2_grpc
 import torch
+import numpy as np
+from threading import Thread
 from vibevoice.modular.modeling_vibevoice_streaming_inference import VibeVoiceStreamingForConditionalGenerationInference
 from vibevoice.processor.vibevoice_streaming_processor import VibeVoiceStreamingProcessor
+from vibevoice.modular.streamer import AudioStreamer
 
 import grpc
 
@@ -444,8 +447,152 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
             print(f"Error in TTS: {err}", file=sys.stderr)
             print(traceback.format_exc(), file=sys.stderr)
             return backend_pb2.Result(success=False, message=f"Unexpected {err=}, {type(err)=}")
-        
+
         return backend_pb2.Result(success=True)
+
+    def TTSStream(self, request, context):
+        """Stream TTS audio chunks as they are generated using AudioStreamer for true streaming."""
+        try:
+            # Voice selection logic (same as TTS)
+            voice_path = None
+            if request.voice:
+                voice_path = self._get_voice_path(request.voice)
+            elif self.default_voice_key:
+                voice_path = self._get_voice_path(self.default_voice_key)
+
+            if not voice_path or not os.path.exists(voice_path):
+                yield backend_pb2.TTSStreamChunk(
+                    audio=b'',
+                    sample_rate=24000,
+                    chunk_index=0,
+                    is_final=True,
+                    error=f"Voice file not found: {voice_path}"
+                )
+                return
+
+            prefilled_outputs = self._ensure_voice_cached(voice_path)
+            if prefilled_outputs is None:
+                yield backend_pb2.TTSStreamChunk(
+                    audio=b'',
+                    sample_rate=24000,
+                    chunk_index=0,
+                    is_final=True,
+                    error=f"Failed to load voice preset from {voice_path}"
+                )
+                return
+
+            # Get generation parameters
+            cfg_scale = self.options.get("cfg_scale", self.cfg_scale)
+            inference_steps = self.options.get("inference_steps", self.inference_steps)
+
+            # Prepare text and inputs
+            text = request.text.strip().replace("'", "'").replace('"', '"').replace('"', '"')
+            inputs = self.processor.process_input_with_cached_prompt(
+                text=text,
+                cached_prompt=prefilled_outputs,
+                padding=True,
+                return_tensors="pt",
+                return_attention_mask=True,
+            )
+
+            # Move tensors to device
+            for k, v in inputs.items():
+                if torch.is_tensor(v):
+                    inputs[k] = v.to(self._torch_device)
+
+            print(f"TTSStream: Generating with cfg_scale={cfg_scale}, steps={inference_steps}", file=sys.stderr)
+
+            # Create AudioStreamer for true streaming (~300ms to first chunk)
+            audio_streamer = AudioStreamer(batch_size=1)
+            generation_error = [None]  # Use list to capture error from thread
+
+            # Run generation in background thread
+            def run_generation():
+                try:
+                    self.model.generate(
+                        **inputs,
+                        max_new_tokens=None,
+                        cfg_scale=cfg_scale,
+                        tokenizer=self.processor.tokenizer,
+                        generation_config={
+                            'do_sample': False,
+                            'temperature': 1.0,
+                            'top_p': 1.0,
+                        },
+                        verbose=False,
+                        all_prefilled_outputs=copy.deepcopy(prefilled_outputs) if prefilled_outputs is not None else None,
+                        audio_streamer=audio_streamer,  # KEY: Pass streamer for true streaming!
+                    )
+                except Exception as e:
+                    generation_error[0] = e
+                    print(f"Generation thread error: {e}", file=sys.stderr)
+
+            thread = Thread(target=run_generation, daemon=True)
+            thread.start()
+
+            # Yield chunks as they arrive from the streamer (~300ms to first chunk)
+            chunk_index = 0
+            try:
+                for audio_chunk in audio_streamer.get_stream(0):
+                    # Convert tensor to numpy
+                    audio_np = audio_chunk.detach().cpu().to(torch.float32).numpy()
+
+                    # Flatten if needed
+                    if audio_np.ndim > 1:
+                        audio_np = audio_np.reshape(-1)
+
+                    # Normalize if peak > 1.0
+                    peak = np.max(np.abs(audio_np)) if audio_np.size else 0.0
+                    if peak > 1.0:
+                        audio_np = audio_np / peak
+
+                    # Convert to 16-bit PCM
+                    audio_int16 = (audio_np * 32767).astype(np.int16)
+                    audio_bytes = audio_int16.tobytes()
+
+                    yield backend_pb2.TTSStreamChunk(
+                        audio=audio_bytes,
+                        sample_rate=24000,
+                        chunk_index=chunk_index,
+                        is_final=False
+                    )
+                    chunk_index += 1
+                    print(f"Streamed audio chunk {chunk_index}, {len(audio_bytes)} bytes", file=sys.stderr)
+            except Exception as stream_err:
+                print(f"Stream iteration error: {stream_err}", file=sys.stderr)
+
+            # Wait for generation thread to complete
+            thread.join(timeout=60)  # 60 second timeout
+
+            # Check for generation errors
+            if generation_error[0] is not None:
+                yield backend_pb2.TTSStreamChunk(
+                    audio=b'',
+                    sample_rate=24000,
+                    chunk_index=chunk_index,
+                    is_final=True,
+                    error=f"Generation error: {generation_error[0]}"
+                )
+                return
+
+            # Send final chunk to signal completion
+            yield backend_pb2.TTSStreamChunk(
+                audio=b'',
+                sample_rate=24000,
+                chunk_index=chunk_index,
+                is_final=True
+            )
+
+        except Exception as err:
+            print(f"TTSStream error: {err}", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)
+            yield backend_pb2.TTSStreamChunk(
+                audio=b'',
+                sample_rate=24000,
+                chunk_index=0,
+                is_final=True,
+                error=f"Unexpected {err=}, {type(err)=}"
+            )
 
 def serve(address):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=MAX_WORKERS),

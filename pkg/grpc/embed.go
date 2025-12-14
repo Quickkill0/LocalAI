@@ -10,6 +10,7 @@ import (
 
 var _ Backend = new(embedBackend)
 var _ pb.Backend_PredictStreamServer = new(embedBackendServerStream)
+var _ pb.Backend_TTSStreamServer = new(embedBackendTTSStreamServer)
 
 type embedBackend struct {
 	s *server
@@ -53,6 +54,14 @@ func (e *embedBackend) GenerateVideo(ctx context.Context, in *pb.GenerateVideoRe
 
 func (e *embedBackend) TTS(ctx context.Context, in *pb.TTSRequest, opts ...grpc.CallOption) (*pb.Result, error) {
 	return e.s.TTS(ctx, in)
+}
+
+func (e *embedBackend) TTSStream(ctx context.Context, in *pb.TTSRequest, f func(chunk *pb.TTSStreamChunk), opts ...grpc.CallOption) error {
+	bs := &embedBackendTTSStreamServer{
+		ctx: ctx,
+		fn:  f,
+	}
+	return e.s.TTSStream(in, bs)
 }
 
 func (e *embedBackend) SoundGeneration(ctx context.Context, in *pb.SoundGenerationRequest, opts ...grpc.CallOption) (*pb.Result, error) {
@@ -136,5 +145,41 @@ func (e *embedBackendServerStream) SendMsg(m any) error {
 }
 
 func (e *embedBackendServerStream) RecvMsg(m any) error {
+	return nil
+}
+
+type embedBackendTTSStreamServer struct {
+	ctx context.Context
+	fn  func(chunk *pb.TTSStreamChunk)
+}
+
+func (e *embedBackendTTSStreamServer) Send(chunk *pb.TTSStreamChunk) error {
+	e.fn(chunk)
+	return nil
+}
+
+func (e *embedBackendTTSStreamServer) SetHeader(md metadata.MD) error {
+	return nil
+}
+
+func (e *embedBackendTTSStreamServer) SendHeader(md metadata.MD) error {
+	return nil
+}
+
+func (e *embedBackendTTSStreamServer) SetTrailer(md metadata.MD) {
+}
+
+func (e *embedBackendTTSStreamServer) Context() context.Context {
+	return e.ctx
+}
+
+func (e *embedBackendTTSStreamServer) SendMsg(m any) error {
+	if x, ok := m.(*pb.TTSStreamChunk); ok {
+		return e.Send(x)
+	}
+	return nil
+}
+
+func (e *embedBackendTTSStreamServer) RecvMsg(m any) error {
 	return nil
 }

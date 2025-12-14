@@ -11,6 +11,7 @@ import os
 import backend_pb2
 import backend_pb2_grpc
 
+import numpy as np
 import torch
 from kokoro import KPipeline
 import soundfile as sf
@@ -75,8 +76,52 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         except Exception as err:
             return backend_pb2.Result(success=False, message=f"Unexpected {err=}, {type(err)=}")
-        
+
         return backend_pb2.Result(success=True)
+
+    def TTSStream(self, request, context):
+        """Stream TTS audio chunks as they are generated."""
+        try:
+            # Get voice from request, default to 'af_heart' if not specified
+            voice = request.voice if request.voice else 'af_heart'
+
+            # Generate audio using Kokoro pipeline - it's already a generator!
+            generator = self.pipeline(request.text, voice=voice)
+
+            chunk_index = 0
+            for i, (gs, ps, audio) in enumerate(generator):
+                # audio is a torch tensor - convert to 16-bit PCM bytes
+                audio_np = audio.cpu().numpy()
+                # Normalize to int16 range
+                audio_int16 = (audio_np * 32767).astype(np.int16)
+                audio_bytes = audio_int16.tobytes()
+
+                yield backend_pb2.TTSStreamChunk(
+                    audio=audio_bytes,
+                    sample_rate=24000,
+                    chunk_index=chunk_index,
+                    is_final=False
+                )
+                chunk_index += 1
+                print(f"Streamed audio segment {i}: gs={gs}, ps={ps}", file=sys.stderr)
+
+            # Send final empty chunk to signal completion
+            yield backend_pb2.TTSStreamChunk(
+                audio=b'',
+                sample_rate=24000,
+                chunk_index=chunk_index,
+                is_final=True
+            )
+
+        except Exception as err:
+            print(f"TTSStream error: {err}", file=sys.stderr)
+            yield backend_pb2.TTSStreamChunk(
+                audio=b'',
+                sample_rate=24000,
+                chunk_index=0,
+                is_final=True,
+                error=f"Unexpected {err=}, {type(err)=}"
+            )
 
 def serve(address):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=MAX_WORKERS),
