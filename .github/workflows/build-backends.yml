@@ -36,6 +36,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare repository name
+        id: repo
+        run: echo "name=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Build and push Kokoro backend (CUDA 12)
         uses: docker/build-push-action@v5
         with:
@@ -43,8 +47,8 @@ jobs:
           file: ./backend/Dockerfile.python
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/localai-backends:latest-gpu-nvidia-cuda-12-kokoro
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/localai-backends:cuda12-kokoro
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:latest-gpu-nvidia-cuda-12-kokoro
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:cuda12-kokoro
           build-args: |
             BACKEND=kokoro
             BUILD_TYPE=cublas
@@ -73,6 +77,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare repository name
+        id: repo
+        run: echo "name=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Build and push VibeVoice backend (CUDA 12)
         uses: docker/build-push-action@v5
         with:
@@ -80,8 +88,8 @@ jobs:
           file: ./backend/Dockerfile.python
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/localai-backends:latest-gpu-nvidia-cuda-12-vibevoice
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/localai-backends:cuda12-vibevoice
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:latest-gpu-nvidia-cuda-12-vibevoice
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:cuda12-vibevoice
           build-args: |
             BACKEND=vibevoice
             BUILD_TYPE=cublas

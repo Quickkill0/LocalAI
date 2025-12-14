@@ -23,6 +23,8 @@
 
 - name: "cuda12-kokoro"
   uri: "ghcr.io/quickkill0/localai-backends:cuda12-kokoro"
+  mirrors:
+    - ghcr.io/quickkill0/localai-backends:latest-gpu-nvidia-cuda-12-kokoro
 
 - name: "vibevoice"
   alias: "vibevoice"
@@ -46,3 +48,5 @@
 
 - name: "cuda12-vibevoice"
   uri: "ghcr.io/quickkill0/localai-backends:cuda12-vibevoice"
+  mirrors:
+    - ghcr.io/quickkill0/localai-backends:latest-gpu-nvidia-cuda-12-vibevoice
