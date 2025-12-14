@@ -33,3 +33,14 @@ if [ "x${USE_PIP}" == "xtrue" ]; then
 else
     uv pip install ${EXTRA_PIP_INSTALL_FLAGS:-} .
 fi
+
+cd ..
+
+# Install transformers with VibeVoice 1.5B support (PR #40546)
+# This enables the long-form multi-speaker model
+echo "Installing transformers with VibeVoice 1.5B support..."
+if [ "x${USE_PIP}" == "xtrue" ]; then
+    pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/huggingface/transformers.git@refs/pull/40546/head
+else
+    uv pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/huggingface/transformers.git@refs/pull/40546/head
+fi
