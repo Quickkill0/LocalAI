@@ -9,7 +9,6 @@ on:
       - 'backend/python/kokoro/**'
       - 'backend/python/vibevoice/**'
       - 'backend/backend.proto'
-      - '.github/workflows/build-backends.yml'
   workflow_dispatch:
     inputs:
       backend:
@@ -63,15 +62,15 @@ jobs:
           # For push events, check which files changed
           CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
 
-          # Check for kokoro changes
-          if echo "$CHANGED_FILES" | grep -qE '^backend/python/kokoro/|^backend/backend\.proto$|^\.github/workflows/build-backends\.yml$'; then
+          # Check for kokoro changes (only kokoro files or backend.proto)
+          if echo "$CHANGED_FILES" | grep -qE '^backend/python/kokoro/|^backend/backend\.proto$'; then
             echo "kokoro=true" >> $GITHUB_OUTPUT
           else
             echo "kokoro=false" >> $GITHUB_OUTPUT
           fi
 
-          # Check for vibevoice changes
-          if echo "$CHANGED_FILES" | grep -qE '^backend/python/vibevoice/|^backend/backend\.proto$|^\.github/workflows/build-backends\.yml$'; then
+          # Check for vibevoice changes (only vibevoice files or backend.proto)
+          if echo "$CHANGED_FILES" | grep -qE '^backend/python/vibevoice/|^backend/backend\.proto$'; then
             echo "vibevoice=true" >> $GITHUB_OUTPUT
           else
             echo "vibevoice=false" >> $GITHUB_OUTPUT
