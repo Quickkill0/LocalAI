@@ -8,18 +8,20 @@ on:
     paths:
       - 'backend/python/kokoro/**'
       - 'backend/python/vibevoice/**'
+      - 'backend/python/vibevoice-1.5b/**'
       - 'backend/backend.proto'
   workflow_dispatch:
     inputs:
       backend:
         description: 'Which backend to build'
         required: true
-        default: 'both'
+        default: 'all'
         type: choice
         options:
           - kokoro
           - vibevoice
-          - both
+          - vibevoice-1.5b
+          - all
 
 env:
   REGISTRY: ghcr.io
@@ -31,6 +33,7 @@ jobs:
     outputs:
       kokoro: ${{ steps.changes.outputs.kokoro }}
       vibevoice: ${{ steps.changes.outputs.vibevoice }}
+      vibevoice-1_5b: ${{ steps.changes.outputs.vibevoice-1_5b }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -46,14 +49,22 @@ jobs:
               kokoro)
                 echo "kokoro=true" >> $GITHUB_OUTPUT
                 echo "vibevoice=false" >> $GITHUB_OUTPUT
+                echo "vibevoice-1_5b=false" >> $GITHUB_OUTPUT
                 ;;
               vibevoice)
                 echo "kokoro=false" >> $GITHUB_OUTPUT
                 echo "vibevoice=true" >> $GITHUB_OUTPUT
+                echo "vibevoice-1_5b=false" >> $GITHUB_OUTPUT
                 ;;
-              both)
+              vibevoice-1.5b)
+                echo "kokoro=false" >> $GITHUB_OUTPUT
+                echo "vibevoice=false" >> $GITHUB_OUTPUT
+                echo "vibevoice-1_5b=true" >> $GITHUB_OUTPUT
+                ;;
+              all)
                 echo "kokoro=true" >> $GITHUB_OUTPUT
                 echo "vibevoice=true" >> $GITHUB_OUTPUT
+                echo "vibevoice-1_5b=true" >> $GITHUB_OUTPUT
                 ;;
             esac
             exit 0
@@ -69,11 +80,18 @@ jobs:
             echo "kokoro=false" >> $GITHUB_OUTPUT
           fi
 
-          # Check for vibevoice changes (only vibevoice files or backend.proto)
+          # Check for vibevoice (0.5B) changes
           if echo "$CHANGED_FILES" | grep -qE '^backend/python/vibevoice/|^backend/backend\.proto$'; then
             echo "vibevoice=true" >> $GITHUB_OUTPUT
           else
             echo "vibevoice=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check for vibevoice-1.5b changes
+          if echo "$CHANGED_FILES" | grep -qE '^backend/python/vibevoice-1\.5b/|^backend/backend\.proto$'; then
+            echo "vibevoice-1_5b=true" >> $GITHUB_OUTPUT
+          else
+            echo "vibevoice-1_5b=false" >> $GITHUB_OUTPUT
           fi
 
           echo "Changed files:"
@@ -181,6 +199,59 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:cuda12-vibevoice
           build-args: |
             BACKEND=vibevoice
+            BUILD_TYPE=cublas
+            CUDA_MAJOR_VERSION=12
+            BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04
+
+  build-vibevoice-1_5b:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.vibevoice-1_5b == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          echo "After cleanup:"
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare repository name
+        id: repo
+        run: echo "name=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Build and push VibeVoice 1.5B backend (CUDA 12)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.python
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:latest-gpu-nvidia-cuda-12-vibevoice-1.5b
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:cuda12-vibevoice-1.5b
+          build-args: |
+            BACKEND=vibevoice-1.5b
             BUILD_TYPE=cublas
             CUDA_MAJOR_VERSION=12
             BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04

@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
-This is an extra gRPC server of LocalAI for VibeVoice
-Supports both:
-- VibeVoice-Realtime-0.5B (streaming, preconfigured voices)
-- VibeVoice-1.5B (long-form, multi-speaker, audio voice samples)
+This is an extra gRPC server of LocalAI for VibeVoice 0.5B streaming model.
+Supports real-time TTS with preconfigured voice presets (.pt files).
 
-IMPORTANT: The 0.5B streaming model uses the standalone 'vibevoice' package,
-while the 1.5B model uses transformers with PR #40546. These have conflicting
-config registrations, so we MUST determine model type BEFORE importing either.
+NOTE: For the 1.5B long-form multi-speaker model, use the vibevoice-1.5b backend instead.
 """
 from concurrent import futures
 import time
@@ -26,13 +22,6 @@ from threading import Thread
 
 import grpc
 
-# Model type constants
-MODEL_TYPE_STREAMING = "streaming"  # 0.5B realtime
-MODEL_TYPE_LONGFORM = "longform"    # 1.5B multi-speaker
-
-# Global flag to track which model type was loaded (to prevent import conflicts)
-_LOADED_MODEL_TYPE = None
-
 def is_float(s):
     """Check if a string can be converted to float."""
     try:
@@ -49,45 +38,6 @@ def is_int(s):
     except ValueError:
         return False
 
-def detect_model_type(model_path, options=None):
-    """
-    Detect whether the model is streaming (0.5B) or longform (1.5B).
-    Returns MODEL_TYPE_STREAMING or MODEL_TYPE_LONGFORM.
-
-    IMPORTANT: This function must NOT import vibevoice or transformers.VibeVoice
-    to avoid config registration conflicts.
-    """
-    # Check explicit option first
-    if options and options.get("model_type") in [MODEL_TYPE_STREAMING, MODEL_TYPE_LONGFORM]:
-        return options["model_type"]
-
-    model_path_lower = model_path.lower()
-
-    # Check for explicit indicators in model path
-    if "realtime" in model_path_lower or "0.5b" in model_path_lower or "streaming" in model_path_lower:
-        return MODEL_TYPE_STREAMING
-    if "1.5b" in model_path_lower or "7b" in model_path_lower or "longform" in model_path_lower:
-        return MODEL_TYPE_LONGFORM
-
-    # Try to check config.json WITHOUT loading full transformers
-    config_path = os.path.join(model_path, "config.json") if os.path.isdir(model_path) else None
-    if config_path and os.path.exists(config_path):
-        try:
-            import json
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            model_type = config.get('model_type', '')
-            if model_type == 'vibevoice_streaming':
-                return MODEL_TYPE_STREAMING
-            elif model_type == 'vibevoice':
-                return MODEL_TYPE_LONGFORM
-        except Exception as e:
-            print(f"Could not read config.json: {e}", file=sys.stderr)
-
-    # Default to streaming (0.5B) for backward compatibility
-    print("Defaulting to streaming model type", file=sys.stderr)
-    return MODEL_TYPE_STREAMING
-
 _ONE_DAY_IN_SECONDS = 60 * 60 * 24
 
 # If MAX_WORKERS are specified in the environment use it, otherwise default to 1
@@ -95,49 +45,12 @@ MAX_WORKERS = int(os.environ.get('PYTHON_GRPC_MAX_WORKERS', '1'))
 
 class BackendServicer(backend_pb2_grpc.BackendServicer):
     """
-    BackendServicer is the class that implements the gRPC service.
-    Supports both streaming (0.5B) and longform (1.5B) VibeVoice models.
+    BackendServicer for VibeVoice 0.5B streaming model.
     """
     def Health(self, request, context):
         return backend_pb2.Reply(message=bytes("OK", 'utf-8'))
 
     def LoadModel(self, request, context):
-        global _LOADED_MODEL_TYPE
-
-        # Parse options FIRST so we can detect model type before any imports
-        self.options = {}
-        for opt in request.Options:
-            if ":" not in opt:
-                continue
-            key, value = opt.split(":", 1)
-            if is_float(value):
-                value = float(value)
-            elif is_int(value):
-                value = int(value)
-            elif value.lower() in ["true", "false"]:
-                value = value.lower() == "true"
-            self.options[key] = value
-
-        # Get model path
-        model_path = request.Model
-        if not model_path:
-            model_path = "microsoft/VibeVoice-Realtime-0.5B"
-
-        # CRITICAL: Detect model type BEFORE any vibevoice/transformers imports
-        # to avoid config registration conflicts
-        self.model_type = detect_model_type(model_path, self.options)
-        print(f"Detected model type: {self.model_type}", file=sys.stderr)
-
-        # Check if we're trying to load a different model type than already loaded
-        if _LOADED_MODEL_TYPE is not None and _LOADED_MODEL_TYPE != self.model_type:
-            return backend_pb2.Result(
-                success=False,
-                message=f"Cannot load {self.model_type} model. This backend instance "
-                        f"already loaded a {_LOADED_MODEL_TYPE} model. The vibevoice "
-                        f"package and transformers have conflicting registrations. "
-                        f"Please use separate model configs for 0.5B and 1.5B models."
-            )
-
         # Get device
         if torch.cuda.is_available():
             print("CUDA is available", file=sys.stderr)
@@ -162,51 +75,59 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         self.device = device
         self._torch_device = torch.device(device)
 
-        print(f"Model type: {self.model_type}", file=sys.stderr)
+        # Parse options
+        self.options = {}
+        for opt in request.Options:
+            if ":" not in opt:
+                continue
+            key, value = opt.split(":", 1)
+            if is_float(value):
+                value = float(value)
+            elif is_int(value):
+                value = int(value)
+            elif value.lower() in ["true", "false"]:
+                value = value.lower() == "true"
+            self.options[key] = value
 
-        # Common parameters
-        self.inference_steps = self.options.get("inference_steps", 5 if self.model_type == MODEL_TYPE_STREAMING else 20)
+        # Get model path
+        model_path = request.Model
+        if not model_path:
+            model_path = "microsoft/VibeVoice-Realtime-0.5B"
+
+        # Parameters
+        self.inference_steps = self.options.get("inference_steps", 5)
         if not isinstance(self.inference_steps, int) or self.inference_steps <= 0:
             self.inference_steps = 5
 
-        self.cfg_scale = self.options.get("cfg_scale", 1.5 if self.model_type == MODEL_TYPE_STREAMING else 1.3)
+        self.cfg_scale = self.options.get("cfg_scale", 1.5)
         if not isinstance(self.cfg_scale, (int, float)) or self.cfg_scale <= 0:
             self.cfg_scale = 1.5
 
         try:
-            if self.model_type == MODEL_TYPE_STREAMING:
-                return self._load_streaming_model(request, model_path)
-            else:
-                return self._load_longform_model(request, model_path)
+            return self._load_model(request, model_path)
         except Exception as err:
             print(f"Error loading model: {err}", file=sys.stderr)
             print(traceback.format_exc(), file=sys.stderr)
             return backend_pb2.Result(success=False, message=f"Unexpected {err=}, {type(err)=}")
 
-    def _load_streaming_model(self, request, model_path):
+    def _load_model(self, request, model_path):
         """Load the 0.5B streaming model with preconfigured voice presets."""
-        global _LOADED_MODEL_TYPE
-
-        # Import the standalone vibevoice package (NOT transformers)
-        # This MUST happen before any transformers.VibeVoice imports
         from vibevoice.modular.modeling_vibevoice_streaming_inference import VibeVoiceStreamingForConditionalGenerationInference
         from vibevoice.processor.vibevoice_streaming_processor import VibeVoiceStreamingProcessor
 
-        _LOADED_MODEL_TYPE = MODEL_TYPE_STREAMING
-
         # Setup voices directory for .pt preset files
-        voices_dir = self._find_voices_dir(request, "streaming_model")
+        voices_dir = self._find_voices_dir(request)
         self.voices_dir = voices_dir
         self.voice_presets = {}
         self._voice_cache = {}
         self.default_voice_key = None
 
         if self.voices_dir and os.path.exists(self.voices_dir):
-            self._load_voice_presets_pt()
+            self._load_voice_presets()
         else:
             print(f"Warning: Voices directory not found. Voice presets will not be available.", file=sys.stderr)
 
-        print(f"Loading streaming processor & model from {model_path}", file=sys.stderr)
+        print(f"Loading VibeVoice 0.5B from {model_path}", file=sys.stderr)
         self.processor = VibeVoiceStreamingProcessor.from_pretrained(model_path)
 
         # Determine dtype and attention
@@ -258,95 +179,9 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         else:
             print("Warning: No voice presets available.", file=sys.stderr)
 
-        return backend_pb2.Result(message="Streaming model loaded successfully", success=True)
+        return backend_pb2.Result(message="VibeVoice 0.5B loaded successfully", success=True)
 
-    def _load_longform_model(self, request, model_path):
-        """Load the 1.5B long-form multi-speaker model."""
-        global _LOADED_MODEL_TYPE
-
-        # IMPORTANT: The 1.5B model requires transformers PR #40546, which conflicts
-        # with the standalone vibevoice package used for 0.5B streaming.
-        # Until the PR is merged into transformers main, we cannot support both
-        # model types in the same backend instance.
-        return backend_pb2.Result(
-            success=False,
-            message="VibeVoice 1.5B long-form model is not yet supported. "
-                    "The required transformers PR #40546 conflicts with the "
-                    "vibevoice package used for streaming. Once the PR is merged "
-                    "into transformers main, 1.5B support will be added. "
-                    "For now, please use the 0.5B streaming model."
-        )
-
-        # The code below is kept for when the PR is merged:
-        # Try to import from transformers (requires PR #40546)
-        # This MUST happen before any vibevoice package imports to avoid conflicts
-        try:
-            from transformers import AutoModelForCausalLM
-            from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
-            _LOADED_MODEL_TYPE = MODEL_TYPE_LONGFORM
-        except ImportError as e:
-            return backend_pb2.Result(
-                success=False,
-                message=f"Long-form model requires transformers with VibeVoice support. "
-                        f"Install with: pip install git+https://github.com/huggingface/transformers.git@refs/pull/40546/head. "
-                        f"Error: {e}"
-            )
-
-        # Setup voices directory for .wav audio files
-        voices_dir = self._find_voices_dir(request, "longform")
-        if not voices_dir:
-            voices_dir = self._find_voices_dir(request, "voices")
-        self.voices_dir = voices_dir
-        self.voice_samples = {}
-        self._voice_cache = {}
-
-        if self.voices_dir and os.path.exists(self.voices_dir):
-            self._load_voice_samples_wav()
-        else:
-            print(f"Warning: Voices directory not found. Voice samples will not be available.", file=sys.stderr)
-
-        print(f"Loading long-form processor & model from {model_path}", file=sys.stderr)
-
-        try:
-            self.processor = VibeVoiceProcessor.from_pretrained(model_path)
-        except Exception as e:
-            print(f"Failed to load VibeVoiceProcessor: {e}", file=sys.stderr)
-            return backend_pb2.Result(success=False, message=f"Failed to load processor: {e}")
-
-        # Determine dtype
-        if self.device == "cuda":
-            load_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            device_map = "cuda"
-        else:
-            load_dtype = torch.float32
-            device_map = self.device
-
-        print(f"Using device: {self.device}, dtype: {load_dtype}", file=sys.stderr)
-
-        try:
-            # Try loading with VibeVoiceForConditionalGenerationInference
-            from transformers import VibeVoiceForConditionalGenerationInference
-            self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                model_path,
-                torch_dtype=load_dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-            )
-        except ImportError:
-            # Fall back to AutoModel
-            print("VibeVoiceForConditionalGenerationInference not available, trying AutoModel", file=sys.stderr)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=load_dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-            )
-
-        self.model.eval()
-
-        return backend_pb2.Result(message="Long-form model loaded successfully", success=True)
-
-    def _find_voices_dir(self, request, subdir):
+    def _find_voices_dir(self, request):
         """Find voices directory, checking multiple locations."""
         search_paths = []
 
@@ -364,17 +199,15 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         # Standard locations
         if hasattr(request, 'ModelPath') and request.ModelPath:
-            search_paths.append(os.path.join(request.ModelPath, "voices", subdir))
             search_paths.append(os.path.join(request.ModelPath, "voices"))
 
         if request.ModelFile:
             base = os.path.dirname(request.ModelFile)
-            search_paths.append(os.path.join(base, "voices", subdir))
             search_paths.append(os.path.join(base, "voices"))
 
         # Backend directory
-        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        search_paths.append(os.path.join(backend_dir, "vibevoice", "voices", subdir))
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        search_paths.append(os.path.join(backend_dir, "voices"))
 
         for path in search_paths:
             if path and os.path.exists(path):
@@ -383,8 +216,8 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         return None
 
-    def _load_voice_presets_pt(self):
-        """Load .pt voice preset files for streaming model."""
+    def _load_voice_presets(self):
+        """Load .pt voice preset files."""
         self.voice_presets = {}
         pt_files = [f for f in os.listdir(self.voices_dir)
                     if f.lower().endswith('.pt') and os.path.isfile(os.path.join(self.voices_dir, f))]
@@ -397,22 +230,8 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         self.voice_presets = dict(sorted(self.voice_presets.items()))
         print(f"Found {len(self.voice_presets)} voice presets: {', '.join(self.voice_presets.keys())}", file=sys.stderr)
 
-    def _load_voice_samples_wav(self):
-        """Load .wav voice sample files for long-form model."""
-        self.voice_samples = {}
-        wav_files = [f for f in os.listdir(self.voices_dir)
-                     if f.lower().endswith(('.wav', '.mp3', '.flac')) and os.path.isfile(os.path.join(self.voices_dir, f))]
-
-        for wav_file in wav_files:
-            name = os.path.splitext(wav_file)[0]
-            full_path = os.path.join(self.voices_dir, wav_file)
-            self.voice_samples[name] = full_path
-
-        self.voice_samples = dict(sorted(self.voice_samples.items()))
-        print(f"Found {len(self.voice_samples)} voice samples: {', '.join(self.voice_samples.keys())}", file=sys.stderr)
-
     def _determine_voice_key(self, name):
-        """Determine voice key from name or use default (streaming model)."""
+        """Determine voice key from name or use default."""
         if name and name in self.voice_presets:
             return name
 
@@ -425,7 +244,7 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         return None
 
     def _get_voice_path(self, speaker_name):
-        """Get voice file path for streaming model."""
+        """Get voice file path."""
         if not self.voice_presets:
             return None
 
@@ -445,30 +264,8 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         return None
 
-    def _get_voice_sample_paths(self, voice_names):
-        """Get voice sample paths for long-form model."""
-        if not self.voice_samples:
-            return []
-
-        paths = []
-        for name in voice_names:
-            if name in self.voice_samples:
-                paths.append(self.voice_samples[name])
-            else:
-                # Try partial match
-                for sample_name, path in self.voice_samples.items():
-                    if name.lower() in sample_name.lower() or sample_name.lower() in name.lower():
-                        paths.append(path)
-                        break
-
-        # If no matches, use first available samples
-        if not paths and self.voice_samples:
-            paths = list(self.voice_samples.values())[:len(voice_names)]
-
-        return paths
-
     def _ensure_voice_cached(self, voice_path):
-        """Load and cache voice preset (streaming model)."""
+        """Load and cache voice preset."""
         if not voice_path or not os.path.exists(voice_path):
             return None
 
@@ -484,14 +281,7 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         return self._voice_cache[voice_path]
 
     def TTS(self, request, context):
-        """Handle TTS request - routes to appropriate model handler."""
-        if self.model_type == MODEL_TYPE_STREAMING:
-            return self._tts_streaming(request, context)
-        else:
-            return self._tts_longform(request, context)
-
-    def _tts_streaming(self, request, context):
-        """TTS using the 0.5B streaming model."""
+        """Handle TTS request."""
         try:
             voice_path = None
             if request.voice:
@@ -559,85 +349,8 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         return backend_pb2.Result(success=True)
 
-    def _tts_longform(self, request, context):
-        """TTS using the 1.5B long-form model."""
-        try:
-            text = request.text.strip()
-
-            # Parse speaker names from text (format: "Speaker 1:", "Speaker 2:", etc.)
-            import re
-            speaker_pattern = re.compile(r'Speaker\s+(\d+):', re.IGNORECASE)
-            speakers = list(set(speaker_pattern.findall(text)))
-            speakers.sort(key=int)
-
-            # Get voice samples for speakers
-            voice_sample_paths = []
-            if request.AudioPath:
-                # AudioPath can be comma-separated list
-                voice_sample_paths = [p.strip() for p in request.AudioPath.split(',') if p.strip()]
-            elif request.voice:
-                # Voice can be comma-separated list of voice names
-                voice_names = [v.strip() for v in request.voice.split(',') if v.strip()]
-                voice_sample_paths = self._get_voice_sample_paths(voice_names)
-
-            if not voice_sample_paths and self.voice_samples:
-                # Use default voices
-                voice_sample_paths = list(self.voice_samples.values())[:max(len(speakers), 1)]
-
-            cfg_scale = self.options.get("cfg_scale", self.cfg_scale)
-
-            print(f"Generating long-form with {len(speakers)} speakers, cfg_scale={cfg_scale}", file=sys.stderr)
-
-            # Prepare inputs
-            inputs = self.processor(
-                text=[text],
-                voice_samples=[voice_sample_paths] if voice_sample_paths else None,
-                return_tensors="pt",
-                padding=True,
-            )
-
-            # Move to device
-            inputs = {k: v.to(self._torch_device) if isinstance(v, torch.Tensor) else v
-                     for k, v in inputs.items()}
-
-            # Generate
-            outputs = self.model.generate(
-                **inputs,
-                tokenizer=self.processor.tokenizer,
-                cfg_scale=cfg_scale,
-                max_new_tokens=None,
-            )
-
-            # Save output
-            if hasattr(outputs, 'speech_outputs') and outputs.speech_outputs and outputs.speech_outputs[0] is not None:
-                self.processor.save_audio(
-                    outputs.speech_outputs[0],
-                    request.dst,
-                    sampling_rate=self.processor.audio_processor.sampling_rate
-                )
-                print(f"Saved to {request.dst}", file=sys.stderr)
-            else:
-                return backend_pb2.Result(success=False, message="No audio generated")
-
-        except Exception as err:
-            print(f"Long-form TTS error: {err}", file=sys.stderr)
-            print(traceback.format_exc(), file=sys.stderr)
-            return backend_pb2.Result(success=False, message=f"Error: {err}")
-
-        return backend_pb2.Result(success=True)
-
     def TTSStream(self, request, context):
-        """Stream TTS - only supported for streaming (0.5B) model."""
-        if self.model_type != MODEL_TYPE_STREAMING:
-            yield backend_pb2.TTSStreamChunk(
-                audio=b'',
-                sample_rate=24000,
-                chunk_index=0,
-                is_final=True,
-                error="Streaming is only supported for VibeVoice-Realtime-0.5B model"
-            )
-            return
-
+        """Stream TTS audio chunks."""
         try:
             from vibevoice.modular.streamer import AudioStreamer
 
