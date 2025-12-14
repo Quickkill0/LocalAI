@@ -115,6 +115,28 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         # Import from transformers (pengzhiliang/transformers fork with VibeVoice support)
         from transformers import VibeVoiceForConditionalGeneration, VibeVoiceProcessor
 
+        # WORKAROUND: Patch the VibeVoiceAcousticTokenizerConfig to handle decoder_depths
+        # The HuggingFace model has "decoder_depths": null in config.json but the
+        # transformers PR defines decoder_depths as a @property (computed from depths).
+        # This causes "can't set attribute 'decoder_depths'" error.
+        try:
+            from transformers.models.vibevoice_acoustic_tokenizer.configuration_vibevoice_acoustic_tokenizer import (
+                VibeVoiceAcousticTokenizerConfig
+            )
+            original_init = VibeVoiceAcousticTokenizerConfig.__init__
+
+            def patched_init(self, **kwargs):
+                # Remove computed properties that shouldn't be set from config
+                kwargs.pop('decoder_depths', None)
+                kwargs.pop('upsampling_ratios', None)
+                kwargs.pop('hop_length', None)
+                original_init(self, **kwargs)
+
+            VibeVoiceAcousticTokenizerConfig.__init__ = patched_init
+            print("Patched VibeVoiceAcousticTokenizerConfig to handle computed properties", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Could not patch config class: {e}", file=sys.stderr)
+
         # Setup voices directory for .wav audio files
         self.voices_dir = self._find_voices_dir(request)
         self.voice_samples = {}
