@@ -25,12 +25,12 @@ fi
 
 installRequirements
 
-# Install transformers with VibeVoice 1.5B support (PR #40546)
-# This enables the long-form multi-speaker model
-# NOTE: Do NOT install the standalone vibevoice package - it conflicts with this PR
-echo "Installing transformers with VibeVoice 1.5B support from PR #40546..."
+# Install the standalone vibevoice package from Microsoft
+# This provides VibeVoiceProcessor for multi-speaker input handling
+# and the configuration classes needed for the 1.5B model
+echo "Installing vibevoice package..."
 if [ "x${USE_PIP}" == "xtrue" ]; then
-    pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/huggingface/transformers.git@refs/pull/40546/head
+    pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/microsoft/VibeVoice.git
 else
-    uv pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/huggingface/transformers.git@refs/pull/40546/head
+    uv pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/microsoft/VibeVoice.git
 fi

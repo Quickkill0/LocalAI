@@ -3,9 +3,8 @@
 This is an extra gRPC server of LocalAI for VibeVoice 1.5B long-form model.
 Supports multi-speaker TTS with voice cloning from WAV files.
 
-NOTE: This backend uses transformers PR #40546 for VibeVoice support.
-Do NOT use the standalone vibevoice package with this backend - they conflict.
-For 0.5B streaming model, use the separate vibevoice backend instead.
+This backend uses the standalone vibevoice package with VibeVoiceProcessor
+for handling multi-speaker input format.
 """
 from concurrent import futures
 import time
@@ -19,6 +18,7 @@ import backend_pb2
 import backend_pb2_grpc
 import torch
 import numpy as np
+import re
 
 import grpc
 
@@ -46,6 +46,10 @@ MAX_WORKERS = int(os.environ.get('PYTHON_GRPC_MAX_WORKERS', '1'))
 class BackendServicer(backend_pb2_grpc.BackendServicer):
     """
     BackendServicer for VibeVoice 1.5B long-form multi-speaker model.
+
+    NOTE: The 1.5B model uses a different architecture than the 0.5B streaming model.
+    This backend uses VibeVoiceProcessor for multi-speaker script processing and
+    voice sample cloning.
     """
     def Health(self, request, context):
         return backend_pb2.Reply(message=bytes("OK", 'utf-8'))
@@ -108,21 +112,12 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
     def _load_model(self, request, model_path):
         """Load the 1.5B long-form multi-speaker model."""
-        # Import from transformers (requires PR #40546)
-        try:
-            from transformers import VibeVoiceForConditionalGenerationInference, VibeVoiceProcessor
-        except ImportError:
-            try:
-                # Fallback to AutoModel
-                from transformers import AutoModelForCausalLM, AutoProcessor
-                print("Using AutoModel fallback", file=sys.stderr)
-            except ImportError as e:
-                return backend_pb2.Result(
-                    success=False,
-                    message=f"VibeVoice 1.5B requires transformers with PR #40546. "
-                            f"Install with: pip install git+https://github.com/huggingface/transformers.git@refs/pull/40546/head. "
-                            f"Error: {e}"
-                )
+        # Import from the vibevoice package
+        from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+
+        # For the model, we need to use AutoModelForCausalLM with trust_remote_code
+        # since the 1.5B model has custom modeling code
+        from transformers import AutoModelForCausalLM, AutoConfig
 
         # Setup voices directory for .wav audio files
         self.voices_dir = self._find_voices_dir(request)
@@ -135,11 +130,9 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         print(f"Loading VibeVoice 1.5B from {model_path}", file=sys.stderr)
 
-        # Load processor
-        try:
-            self.processor = VibeVoiceProcessor.from_pretrained(model_path)
-        except NameError:
-            self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        # Load processor from vibevoice package
+        self.processor = VibeVoiceProcessor.from_pretrained(model_path)
+        print("Loaded VibeVoiceProcessor", file=sys.stderr)
 
         # Determine dtype
         if self.device == "cuda":
@@ -151,24 +144,16 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         print(f"Using device: {self.device}, dtype: {load_dtype}", file=sys.stderr)
 
-        # Load model
-        try:
-            self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                model_path,
-                torch_dtype=load_dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-            )
-        except NameError:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                torch_dtype=load_dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-            )
-
+        # Load model with trust_remote_code to use the model's custom code
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=load_dtype,
+            device_map=device_map,
+            trust_remote_code=True,
+        )
         self.model.eval()
 
+        print("Model loaded successfully", file=sys.stderr)
         return backend_pb2.Result(message="VibeVoice 1.5B loaded successfully", success=True)
 
     def _find_voices_dir(self, request):
@@ -190,10 +175,12 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         # Standard locations
         if hasattr(request, 'ModelPath') and request.ModelPath:
             search_paths.append(os.path.join(request.ModelPath, "voices"))
+            search_paths.append(os.path.join(request.ModelPath, "voices", "longform"))
 
         if request.ModelFile:
             base = os.path.dirname(request.ModelFile)
             search_paths.append(os.path.join(base, "voices"))
+            search_paths.append(os.path.join(base, "voices", "longform"))
 
         # Backend directory
         backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -249,10 +236,10 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
             text = request.text.strip()
 
             # Parse speaker names from text (format: "Speaker 1:", "Speaker 2:", etc.)
-            import re
             speaker_pattern = re.compile(r'Speaker\s+(\d+):', re.IGNORECASE)
             speakers = list(set(speaker_pattern.findall(text)))
-            speakers.sort(key=int)
+            speakers.sort(key=lambda x: int(x))
+            num_speakers = len(speakers) if speakers else 1
 
             # Get voice samples for speakers
             voice_sample_paths = []
@@ -266,13 +253,14 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
             if not voice_sample_paths and self.voice_samples:
                 # Use default voices
-                voice_sample_paths = list(self.voice_samples.values())[:max(len(speakers), 1)]
+                voice_sample_paths = list(self.voice_samples.values())[:num_speakers]
 
             cfg_scale = self.options.get("cfg_scale", self.cfg_scale)
 
-            print(f"Generating with {len(speakers) or 1} speakers, cfg_scale={cfg_scale}", file=sys.stderr)
+            print(f"Generating with {num_speakers} speaker(s), cfg_scale={cfg_scale}", file=sys.stderr)
+            print(f"Voice samples: {voice_sample_paths}", file=sys.stderr)
 
-            # Prepare inputs
+            # Prepare inputs using VibeVoiceProcessor
             inputs = self.processor(
                 text=[text],
                 voice_samples=[voice_sample_paths] if voice_sample_paths else None,
@@ -280,26 +268,30 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
                 padding=True,
             )
 
-            # Move to device
-            inputs = {k: v.to(self._torch_device) if isinstance(v, torch.Tensor) else v
-                     for k, v in inputs.items()}
+            # Move tensors to device
+            for k, v in inputs.items():
+                if isinstance(v, torch.Tensor):
+                    inputs[k] = v.to(self._torch_device)
 
-            # Generate
-            outputs = self.model.generate(
-                **inputs,
-                tokenizer=self.processor.tokenizer,
-                cfg_scale=cfg_scale,
-                max_new_tokens=None,
-            )
+            print("Generating audio...", file=sys.stderr)
+
+            # Generate using the model
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    tokenizer=self.processor.tokenizer,
+                    cfg_scale=cfg_scale,
+                    max_new_tokens=None,
+                )
 
             # Save output
             if hasattr(outputs, 'speech_outputs') and outputs.speech_outputs and outputs.speech_outputs[0] is not None:
+                audio_output = outputs.speech_outputs[0]
                 self.processor.save_audio(
-                    outputs.speech_outputs[0],
-                    request.dst,
-                    sampling_rate=self.processor.audio_processor.sampling_rate
+                    audio_output,
+                    output_path=request.dst,
                 )
-                print(f"Saved to {request.dst}", file=sys.stderr)
+                print(f"Saved audio to {request.dst}", file=sys.stderr)
             else:
                 return backend_pb2.Result(success=False, message="No audio generated")
 
