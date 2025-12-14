@@ -11,12 +11,78 @@ on:
       - 'backend/backend.proto'
       - '.github/workflows/build-backends.yml'
   workflow_dispatch:
+    inputs:
+      backend:
+        description: 'Which backend to build'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - kokoro
+          - vibevoice
+          - both
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Detect which backends need to be built based on changed files
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      kokoro: ${{ steps.changes.outputs.kokoro }}
+      vibevoice: ${{ steps.changes.outputs.vibevoice }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed files
+        id: changes
+        run: |
+          # For workflow_dispatch, check the input
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            case "${{ inputs.backend }}" in
+              kokoro)
+                echo "kokoro=true" >> $GITHUB_OUTPUT
+                echo "vibevoice=false" >> $GITHUB_OUTPUT
+                ;;
+              vibevoice)
+                echo "kokoro=false" >> $GITHUB_OUTPUT
+                echo "vibevoice=true" >> $GITHUB_OUTPUT
+                ;;
+              both)
+                echo "kokoro=true" >> $GITHUB_OUTPUT
+                echo "vibevoice=true" >> $GITHUB_OUTPUT
+                ;;
+            esac
+            exit 0
+          fi
+
+          # For push events, check which files changed
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
+
+          # Check for kokoro changes
+          if echo "$CHANGED_FILES" | grep -qE '^backend/python/kokoro/|^backend/backend\.proto$|^\.github/workflows/build-backends\.yml$'; then
+            echo "kokoro=true" >> $GITHUB_OUTPUT
+          else
+            echo "kokoro=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check for vibevoice changes
+          if echo "$CHANGED_FILES" | grep -qE '^backend/python/vibevoice/|^backend/backend\.proto$|^\.github/workflows/build-backends\.yml$'; then
+            echo "vibevoice=true" >> $GITHUB_OUTPUT
+          else
+            echo "vibevoice=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
   build-kokoro:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.kokoro == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,7 +93,6 @@ jobs:
         run: |
           echo "Before cleanup:"
           df -h
-          # Remove unnecessary large packages
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
@@ -71,6 +136,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-vibevoice:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.vibevoice == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,7 +148,6 @@ jobs:
         run: |
           echo "Before cleanup:"
           df -h
-          # Remove unnecessary large packages
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
