@@ -36,11 +36,9 @@ fi
 
 cd ..
 
-# Install transformers with VibeVoice 1.5B support (PR #40546)
-# This enables the long-form multi-speaker model
-echo "Installing transformers with VibeVoice 1.5B support..."
-if [ "x${USE_PIP}" == "xtrue" ]; then
-    pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/huggingface/transformers.git@refs/pull/40546/head
-else
-    uv pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/huggingface/transformers.git@refs/pull/40546/head
-fi
+# NOTE: VibeVoice 1.5B support requires transformers PR #40546 which conflicts
+# with the standalone vibevoice package. Once the PR is merged into transformers,
+# we can add 1.5B support. For now, only the 0.5B streaming model is supported.
+#
+# To manually enable 1.5B (WILL BREAK 0.5B):
+# pip install git+https://github.com/huggingface/transformers.git@refs/pull/40546/head

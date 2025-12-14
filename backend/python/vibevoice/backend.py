@@ -4,6 +4,10 @@ This is an extra gRPC server of LocalAI for VibeVoice
 Supports both:
 - VibeVoice-Realtime-0.5B (streaming, preconfigured voices)
 - VibeVoice-1.5B (long-form, multi-speaker, audio voice samples)
+
+IMPORTANT: The 0.5B streaming model uses the standalone 'vibevoice' package,
+while the 1.5B model uses transformers with PR #40546. These have conflicting
+config registrations, so we MUST determine model type BEFORE importing either.
 """
 from concurrent import futures
 import time
@@ -26,6 +30,9 @@ import grpc
 MODEL_TYPE_STREAMING = "streaming"  # 0.5B realtime
 MODEL_TYPE_LONGFORM = "longform"    # 1.5B multi-speaker
 
+# Global flag to track which model type was loaded (to prevent import conflicts)
+_LOADED_MODEL_TYPE = None
+
 def is_float(s):
     """Check if a string can be converted to float."""
     try:
@@ -42,11 +49,18 @@ def is_int(s):
     except ValueError:
         return False
 
-def detect_model_type(model_path):
+def detect_model_type(model_path, options=None):
     """
     Detect whether the model is streaming (0.5B) or longform (1.5B).
     Returns MODEL_TYPE_STREAMING or MODEL_TYPE_LONGFORM.
+
+    IMPORTANT: This function must NOT import vibevoice or transformers.VibeVoice
+    to avoid config registration conflicts.
     """
+    # Check explicit option first
+    if options and options.get("model_type") in [MODEL_TYPE_STREAMING, MODEL_TYPE_LONGFORM]:
+        return options["model_type"]
+
     model_path_lower = model_path.lower()
 
     # Check for explicit indicators in model path
@@ -55,17 +69,20 @@ def detect_model_type(model_path):
     if "1.5b" in model_path_lower or "7b" in model_path_lower or "longform" in model_path_lower:
         return MODEL_TYPE_LONGFORM
 
-    # Try to load config and check model_type
-    try:
-        from transformers import AutoConfig
-        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-        model_type = getattr(config, 'model_type', '')
-        if model_type == 'vibevoice_streaming':
-            return MODEL_TYPE_STREAMING
-        elif model_type == 'vibevoice':
-            return MODEL_TYPE_LONGFORM
-    except Exception as e:
-        print(f"Could not auto-detect model type from config: {e}", file=sys.stderr)
+    # Try to check config.json WITHOUT loading full transformers
+    config_path = os.path.join(model_path, "config.json") if os.path.isdir(model_path) else None
+    if config_path and os.path.exists(config_path):
+        try:
+            import json
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            model_type = config.get('model_type', '')
+            if model_type == 'vibevoice_streaming':
+                return MODEL_TYPE_STREAMING
+            elif model_type == 'vibevoice':
+                return MODEL_TYPE_LONGFORM
+        except Exception as e:
+            print(f"Could not read config.json: {e}", file=sys.stderr)
 
     # Default to streaming (0.5B) for backward compatibility
     print("Defaulting to streaming model type", file=sys.stderr)
@@ -85,6 +102,42 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         return backend_pb2.Reply(message=bytes("OK", 'utf-8'))
 
     def LoadModel(self, request, context):
+        global _LOADED_MODEL_TYPE
+
+        # Parse options FIRST so we can detect model type before any imports
+        self.options = {}
+        for opt in request.Options:
+            if ":" not in opt:
+                continue
+            key, value = opt.split(":", 1)
+            if is_float(value):
+                value = float(value)
+            elif is_int(value):
+                value = int(value)
+            elif value.lower() in ["true", "false"]:
+                value = value.lower() == "true"
+            self.options[key] = value
+
+        # Get model path
+        model_path = request.Model
+        if not model_path:
+            model_path = "microsoft/VibeVoice-Realtime-0.5B"
+
+        # CRITICAL: Detect model type BEFORE any vibevoice/transformers imports
+        # to avoid config registration conflicts
+        self.model_type = detect_model_type(model_path, self.options)
+        print(f"Detected model type: {self.model_type}", file=sys.stderr)
+
+        # Check if we're trying to load a different model type than already loaded
+        if _LOADED_MODEL_TYPE is not None and _LOADED_MODEL_TYPE != self.model_type:
+            return backend_pb2.Result(
+                success=False,
+                message=f"Cannot load {self.model_type} model. This backend instance "
+                        f"already loaded a {_LOADED_MODEL_TYPE} model. The vibevoice "
+                        f"package and transformers have conflicting registrations. "
+                        f"Please use separate model configs for 0.5B and 1.5B models."
+            )
+
         # Get device
         if torch.cuda.is_available():
             print("CUDA is available", file=sys.stderr)
@@ -109,33 +162,6 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         self.device = device
         self._torch_device = torch.device(device)
 
-        # Parse options
-        self.options = {}
-        for opt in request.Options:
-            if ":" not in opt:
-                continue
-            key, value = opt.split(":", 1)
-            if is_float(value):
-                value = float(value)
-            elif is_int(value):
-                value = int(value)
-            elif value.lower() in ["true", "false"]:
-                value = value.lower() == "true"
-            self.options[key] = value
-
-        # Get model path
-        model_path = request.Model
-        if not model_path:
-            model_path = "microsoft/VibeVoice-Realtime-0.5B"
-
-        # Detect model type
-        self.model_type = self.options.get("model_type", None)
-        if self.model_type not in [MODEL_TYPE_STREAMING, MODEL_TYPE_LONGFORM, None]:
-            self.model_type = None
-
-        if self.model_type is None:
-            self.model_type = detect_model_type(model_path)
-
         print(f"Model type: {self.model_type}", file=sys.stderr)
 
         # Common parameters
@@ -159,8 +185,14 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
     def _load_streaming_model(self, request, model_path):
         """Load the 0.5B streaming model with preconfigured voice presets."""
+        global _LOADED_MODEL_TYPE
+
+        # Import the standalone vibevoice package (NOT transformers)
+        # This MUST happen before any transformers.VibeVoice imports
         from vibevoice.modular.modeling_vibevoice_streaming_inference import VibeVoiceStreamingForConditionalGenerationInference
         from vibevoice.processor.vibevoice_streaming_processor import VibeVoiceStreamingProcessor
+
+        _LOADED_MODEL_TYPE = MODEL_TYPE_STREAMING
 
         # Setup voices directory for .pt preset files
         voices_dir = self._find_voices_dir(request, "streaming_model")
@@ -230,10 +262,28 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
     def _load_longform_model(self, request, model_path):
         """Load the 1.5B long-form multi-speaker model."""
+        global _LOADED_MODEL_TYPE
+
+        # IMPORTANT: The 1.5B model requires transformers PR #40546, which conflicts
+        # with the standalone vibevoice package used for 0.5B streaming.
+        # Until the PR is merged into transformers main, we cannot support both
+        # model types in the same backend instance.
+        return backend_pb2.Result(
+            success=False,
+            message="VibeVoice 1.5B long-form model is not yet supported. "
+                    "The required transformers PR #40546 conflicts with the "
+                    "vibevoice package used for streaming. Once the PR is merged "
+                    "into transformers main, 1.5B support will be added. "
+                    "For now, please use the 0.5B streaming model."
+        )
+
+        # The code below is kept for when the PR is merged:
         # Try to import from transformers (requires PR #40546)
+        # This MUST happen before any vibevoice package imports to avoid conflicts
         try:
             from transformers import AutoModelForCausalLM
             from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+            _LOADED_MODEL_TYPE = MODEL_TYPE_LONGFORM
         except ImportError as e:
             return backend_pb2.Result(
                 success=False,
