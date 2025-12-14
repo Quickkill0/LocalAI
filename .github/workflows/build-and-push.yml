@@ -55,6 +55,19 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          # Remove unnecessary large packages to make room for CUDA build
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          echo "After cleanup:"
+          df -h
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -65,3 +78,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
+          build-args: |
+            BUILD_TYPE=cublas
+            CUDA_MAJOR_VERSION=12
+            CUDA_MINOR_VERSION=4
+            BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04
