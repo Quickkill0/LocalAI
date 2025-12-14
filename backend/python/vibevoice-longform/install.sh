@@ -25,12 +25,12 @@ fi
 
 installRequirements
 
-# Install the standalone vibevoice package from Microsoft
-# This provides VibeVoiceProcessor for multi-speaker input handling
-# and the configuration classes needed for the 1.5B model
-echo "Installing vibevoice package..."
+# Install transformers from the PR fork that has VibeVoice support
+# This provides VibeVoiceForConditionalGeneration and VibeVoiceProcessor
+# PR #40546: https://github.com/huggingface/transformers/pull/40546
+echo "Installing transformers with VibeVoice support..."
 if [ "x${USE_PIP}" == "xtrue" ]; then
-    pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/microsoft/VibeVoice.git
+    pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/pengzhiliang/transformers.git@main
 else
-    uv pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/microsoft/VibeVoice.git
+    uv pip install ${EXTRA_PIP_INSTALL_FLAGS:-} git+https://github.com/pengzhiliang/transformers.git@main
 fi

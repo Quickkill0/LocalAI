@@ -3,8 +3,8 @@
 This is an extra gRPC server of LocalAI for VibeVoice 1.5B long-form model.
 Supports multi-speaker TTS with voice cloning from WAV files.
 
-This backend uses the standalone vibevoice package with VibeVoiceProcessor
-for handling multi-speaker input format.
+This backend uses transformers from the VibeVoice PR (pengzhiliang/transformers)
+which provides VibeVoiceForConditionalGeneration and VibeVoiceProcessor.
 """
 from concurrent import futures
 import time
@@ -112,12 +112,8 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
     def _load_model(self, request, model_path):
         """Load the 1.5B long-form multi-speaker model."""
-        # Import from the vibevoice package
-        from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
-
-        # For the model, we need to use AutoModelForCausalLM with trust_remote_code
-        # since the 1.5B model has custom modeling code
-        from transformers import AutoModelForCausalLM, AutoConfig
+        # Import from transformers (pengzhiliang/transformers fork with VibeVoice support)
+        from transformers import VibeVoiceForConditionalGeneration, VibeVoiceProcessor
 
         # Setup voices directory for .wav audio files
         self.voices_dir = self._find_voices_dir(request)
@@ -130,7 +126,7 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         print(f"Loading VibeVoice 1.5B from {model_path}", file=sys.stderr)
 
-        # Load processor from vibevoice package
+        # Load processor from transformers
         self.processor = VibeVoiceProcessor.from_pretrained(model_path)
         print("Loaded VibeVoiceProcessor", file=sys.stderr)
 
@@ -144,12 +140,11 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
 
         print(f"Using device: {self.device}, dtype: {load_dtype}", file=sys.stderr)
 
-        # Load model with trust_remote_code to use the model's custom code
-        self.model = AutoModelForCausalLM.from_pretrained(
+        # Load model using VibeVoiceForConditionalGeneration from transformers PR
+        self.model = VibeVoiceForConditionalGeneration.from_pretrained(
             model_path,
             torch_dtype=load_dtype,
             device_map=device_map,
-            trust_remote_code=True,
         )
         self.model.eval()
 
