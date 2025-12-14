@@ -131,8 +131,6 @@ jobs:
             BUILD_TYPE=cublas
             CUDA_MAJOR_VERSION=12
             BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   build-vibevoice:
     needs: detect-changes
@@ -186,5 +184,3 @@ jobs:
             BUILD_TYPE=cublas
             CUDA_MAJOR_VERSION=12
             BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
