@@ -8,7 +8,7 @@ on:
     paths:
       - 'backend/python/kokoro/**'
       - 'backend/python/vibevoice/**'
-      - 'backend/python/vibevoice-1.5b/**'
+      - 'backend/python/vibevoice-longform/**'
       - 'backend/backend.proto'
   workflow_dispatch:
     inputs:
@@ -20,7 +20,7 @@ on:
         options:
           - kokoro
           - vibevoice
-          - vibevoice-1.5b
+          - vibevoice-longform
           - all
 
 env:
@@ -33,7 +33,7 @@ jobs:
     outputs:
       kokoro: ${{ steps.changes.outputs.kokoro }}
       vibevoice: ${{ steps.changes.outputs.vibevoice }}
-      vibevoice-1_5b: ${{ steps.changes.outputs.vibevoice-1_5b }}
+      vibevoice_longform: ${{ steps.changes.outputs.vibevoice_longform }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -49,22 +49,22 @@ jobs:
               kokoro)
                 echo "kokoro=true" >> $GITHUB_OUTPUT
                 echo "vibevoice=false" >> $GITHUB_OUTPUT
-                echo "vibevoice-1_5b=false" >> $GITHUB_OUTPUT
+                echo "vibevoice_longform=false" >> $GITHUB_OUTPUT
                 ;;
               vibevoice)
                 echo "kokoro=false" >> $GITHUB_OUTPUT
                 echo "vibevoice=true" >> $GITHUB_OUTPUT
-                echo "vibevoice-1_5b=false" >> $GITHUB_OUTPUT
+                echo "vibevoice_longform=false" >> $GITHUB_OUTPUT
                 ;;
-              vibevoice-1.5b)
+              vibevoice-longform)
                 echo "kokoro=false" >> $GITHUB_OUTPUT
                 echo "vibevoice=false" >> $GITHUB_OUTPUT
-                echo "vibevoice-1_5b=true" >> $GITHUB_OUTPUT
+                echo "vibevoice_longform=true" >> $GITHUB_OUTPUT
                 ;;
               all)
                 echo "kokoro=true" >> $GITHUB_OUTPUT
                 echo "vibevoice=true" >> $GITHUB_OUTPUT
-                echo "vibevoice-1_5b=true" >> $GITHUB_OUTPUT
+                echo "vibevoice_longform=true" >> $GITHUB_OUTPUT
                 ;;
             esac
             exit 0
@@ -87,11 +87,11 @@ jobs:
             echo "vibevoice=false" >> $GITHUB_OUTPUT
           fi
 
-          # Check for vibevoice-1.5b changes
-          if echo "$CHANGED_FILES" | grep -qE '^backend/python/vibevoice-1\.5b/|^backend/backend\.proto$'; then
-            echo "vibevoice-1_5b=true" >> $GITHUB_OUTPUT
+          # Check for vibevoice-longform (1.5B) changes
+          if echo "$CHANGED_FILES" | grep -qE '^backend/python/vibevoice-longform/|^backend/backend\.proto$'; then
+            echo "vibevoice_longform=true" >> $GITHUB_OUTPUT
           else
-            echo "vibevoice-1_5b=false" >> $GITHUB_OUTPUT
+            echo "vibevoice_longform=false" >> $GITHUB_OUTPUT
           fi
 
           echo "Changed files:"
@@ -203,9 +203,9 @@ jobs:
             CUDA_MAJOR_VERSION=12
             BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04
 
-  build-vibevoice-1_5b:
+  build-vibevoice-longform:
     needs: detect-changes
-    if: needs.detect-changes.outputs.vibevoice-1_5b == 'true'
+    if: needs.detect-changes.outputs.vibevoice_longform == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -241,17 +241,17 @@ jobs:
         id: repo
         run: echo "name=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      - name: Build and push VibeVoice 1.5B backend (CUDA 12)
+      - name: Build and push VibeVoice Longform backend (CUDA 12)
         uses: docker/build-push-action@v5
         with:
           context: ./backend
           file: ./backend/Dockerfile.python
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:latest-gpu-nvidia-cuda-12-vibevoice-1.5b
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:cuda12-vibevoice-1.5b
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:latest-gpu-nvidia-cuda-12-vibevoice-longform
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}/localai-backends:cuda12-vibevoice-longform
           build-args: |
-            BACKEND=vibevoice-1.5b
+            BACKEND=vibevoice-longform
             BUILD_TYPE=cublas
             CUDA_MAJOR_VERSION=12
             BASE_IMAGE=nvidia/cuda:12.4.0-devel-ubuntu22.04
